@@ -1,0 +1,139 @@
+# .github/workflows/auto-build-executable.yml
+name: Auto Zipped Python
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - '.github/workflows/zipped.yml'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 拉取代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. 设置 Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # 3. 缓存 pip 依赖
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # 4. 安装依赖
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 5. 使用 zipapp 打包成 .pyz
+      - name: Build .pyz executable
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="sha-${{ github.sha }}"
+          fi
+          python -m zipapp . \
+            -o AutoChangeDNS-$VERSION.pyz \
+            -p "/usr/bin/env python3"
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoChangeDNS
+          path: |
+            AutoChangeDNS-*
+            requirements.txt
+
+      # 6. 自动生成更新日志
+      - name: Generate Release Notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: generate_notes
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          result-encoding: string
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tag = context.ref.replace('refs/tags/', '');
+  
+            // 1. 找到上一个 release
+            const releasesResp = await github.rest.repos.listReleases({
+              owner, repo, per_page: 100
+            });
+            const releases = releasesResp.data;
+            const tags = releases.map(r => r.tag_name);
+            const idx = tags.indexOf(tag);
+            const prev = idx < releases.length - 1 ? releases[idx+1] : null;
+            const since = prev ? prev.published_at : null;
+            const prevTag = prev ? prev.tag_name : null;
+  
+            // 2. 生成 compare 链接
+            const compareUrl = prevTag
+              ? `https://github.com/${owner}/${repo}/compare/${prevTag}...${tag}`
+              : '';
+  
+            // 3. 拉取自上一个 release 以来所有关闭的 issue/PR（已过滤 wontfix/duplicate）
+            const params = { owner, repo, state: 'closed', per_page: 100 };
+            if (since) params.since = since;
+            const issuesResp = await github.rest.issues.listForRepo(params);
+            const items = issuesResp.data.filter(item =>
+              !item.labels.some(lbl => ['wontfix', 'duplicate'].includes(lbl.name.toLowerCase()))
+            );
+  
+            // 4. 按标签分组
+            const groups = { Fix: [], Update: [], Feature: [] };
+            items.forEach(item => {
+              item.labels.forEach(lbl => {
+                if (lbl.name === 'bug')         groups.Fix.push(item);
+                else if (lbl.name === 'update') groups.Update.push(item);
+                else if (lbl.name === 'enhancement') groups.Feature.push(item);
+              });
+            });
+  
+            // 5. 构建 Markdown body
+            let body = "# What's Changed\n\n";
+            const zh = { Fix: '修复', Update: '更新', Feature: '新增' };
+            for (const key of ['Fix','Update','Feature']) {
+              if (groups[key].length) {
+                body += `## ${key}\n\n`;
+                for (const i of groups[key]) {
+                  body += `- ${zh[key]}：[#${i.number}](${i.html_url}) ${i.title}\n`;
+                }
+                body += "\n";
+              }
+            }
+            if (compareUrl) {
+              body += `**Full Changelog**: ${compareUrl}\n`;
+            }
+  
+            return body;
+
+      # 7. 创建 Release 并上传产物
+      - name: Create Unified Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: AutoChangeDNS ${{ github.ref_name }}
+          body: ${{ steps.generate_notes.outputs.result }}
+          files: |
+            *.pyz
+            requirements.txt

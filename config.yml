@@ -1,0 +1,20 @@
+# 服务器IP地址
+server_ip: 127.0.0.1
+# 检查时间间隔（秒）
+check_time: 60
+# 故障转移阈值（%）
+failover_threshold: 10
+# 故障转移IP地址
+failover_ip: 127.0.0.1
+# 域名
+domain: example.com
+# 记录名称（RR）
+rr: www
+# 记录类型
+record_type: A
+# TTL（秒）
+ttl: 600
+# 阿里云Access Key ID
+ali_access_key_id: ''
+# 阿里云Access Key Secret
+ali_access_key_secret: ''
